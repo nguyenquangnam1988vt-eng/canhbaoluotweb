@@ -1,5 +1,5 @@
 name: network_monitor
-description: "Network Activity Monitor 5 Seconds"
+description: "Network Monitor - Multi Platform"
 publish_to: 'none'
 
 version: 1.0.0+1
@@ -12,7 +12,6 @@ dependencies:
     sdk: flutter
   connectivity_plus: ^5.0.2
   permission_handler: ^11.0.1
-  flutter_background_geolocation: ^4.13.3
 
 dev_dependencies:
   flutter_test:
