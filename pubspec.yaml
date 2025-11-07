@@ -1,5 +1,5 @@
 name: network_monitor
-description: "Network Monitor - Multi Platform"
+description: "Real Network Monitor with Screen Time"
 publish_to: 'none'
 
 version: 1.0.0+1
@@ -11,7 +11,7 @@ dependencies:
   flutter:
     sdk: flutter
   connectivity_plus: ^5.0.2
-  permission_handler: ^11.0.1
+  device_apps: ^2.1.1
 
 dev_dependencies:
   flutter_test:

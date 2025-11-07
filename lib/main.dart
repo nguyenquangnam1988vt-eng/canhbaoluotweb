@@ -1,411 +1,280 @@
 import 'package:flutter/material.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'package:device_apps/device_apps.dart';
 import 'dart:async';
-import 'dart:math';
 import 'dart:io' show Platform;
 
-// Platform detection
-bool get isIOS => Platform.isIOS;
-bool get isWindows => Platform.isWindows;
-
 void main() {
-  runApp(NetworkMonitorApp());
+  runApp(RealNetworkMonitorApp());
 }
 
-class NetworkMonitorApp extends StatelessWidget {
+class RealNetworkMonitorApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: isIOS ? 'Giám Sát Mạng 5 Giây' : 'Network Monitor',
-      theme: ThemeData(
-        primarySwatch: Colors.blue,
-        useMaterial3: true,
-      ),
-      home: NetworkActivityScreen(),
+      title: 'Real Network Monitor',
+      theme: ThemeData(primarySwatch: Colors.blue),
+      home: RealNetworkScreen(),
     );
   }
 }
 
-class NetworkActivityScreen extends StatefulWidget {
+class RealNetworkScreen extends StatefulWidget {
   @override
-  _NetworkActivityScreenState createState() => _NetworkActivityScreenState();
+  _RealNetworkScreenState createState() => _RealNetworkScreenState();
 }
 
-class _NetworkActivityScreenState extends State<NetworkActivityScreen> 
-    with WidgetsBindingObserver {
+class _RealNetworkScreenState extends State<RealNetworkScreen> {
   final Connectivity _connectivity = Connectivity();
-  List<NetworkEvent> _networkEvents = [];
+  List<AppUsage> _activeApps = [];
   bool _isMonitoring = false;
-  int _checkCount = 0;
-  Timer? _monitoringTimer;
-  int _activeAppsCount = 0;
+  Timer? _monitorTimer;
+  String _networkStatus = 'Đang kiểm tra...';
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
+    _checkNetwork();
   }
 
-  @override
-  void dispose() {
-    _stopMonitoring();
-    WidgetsBinding.instance.removeObserver(this);
-    super.dispose();
+  Future<void> _checkNetwork() async {
+    var result = await _connectivity.checkConnectivity();
+    setState(() {
+      _networkStatus = _getNetworkStatusText(result);
+    });
   }
 
-  Future<void> _startMonitoring() async {
-    if (isIOS) {
-      await _startIOSMonitoring();
-    } else {
-      await _startOtherPlatformMonitoring();
+  String _getNetworkStatusText(ConnectivityResult result) {
+    switch (result) {
+      case ConnectivityResult.wifi: return '📶 Đang dùng WiFi';
+      case ConnectivityResult.mobile: return '📱 Đang dùng Mobile Data';
+      case ConnectivityResult.none: return '❌ Mất kết nối mạng';
+      default: return '🌐 Đang kết nối...';
     }
   }
 
-  Future<void> _startIOSMonitoring() async {
-    // Trên iOS, xin quyền location
-    var status = await Permission.locationWhenInUse.request();
-    
-    if (status.isGranted) {
-      setState(() {
-        _isMonitoring = true;
-        _checkCount = 0;
-      });
-
-      _monitoringTimer = Timer.periodic(Duration(seconds: 5), (timer) {
-        if (_isMonitoring) {
-          _performNetworkCheck();
-        }
-      });
-
-      _addNetworkEvent(NetworkEvent(
-        timestamp: DateTime.now(),
-        type: EventType.monitoringStarted,
-        details: '🚀 BẮT ĐẦU GIÁM SÁT 5 GIÂY (iOS)',
-      ));
-
-      _performNetworkCheck();
-    } else {
-      _showPermissionError();
-    }
-  }
-
-  Future<void> _startOtherPlatformMonitoring() async {
+  Future<void> _startRealMonitoring() async {
     setState(() {
       _isMonitoring = true;
-      _checkCount = 0;
+      _activeApps.clear();
     });
 
-    _monitoringTimer = Timer.periodic(Duration(seconds: 5), (timer) {
+    _monitorTimer = Timer.periodic(Duration(seconds: 5), (timer) async {
       if (_isMonitoring) {
-        _performNetworkCheck();
+        await _performRealCheck();
       }
     });
 
-    _addNetworkEvent(NetworkEvent(
-      timestamp: DateTime.now(),
-      type: EventType.monitoringStarted,
-      details: '🚀 BẮT ĐẦU GIÁM SÁT 5 GIÂY (${Platform.operatingSystem})',
-    ));
+    await _performRealCheck();
+  }
 
-    _performNetworkCheck();
+  Future<void> _performRealCheck() async {
+    try {
+      // 1. Kiểm tra kết nối mạng
+      var connectivityResult = await _connectivity.checkConnectivity();
+      await _checkNetwork();
+      
+      if (connectivityResult != ConnectivityResult.none) {
+        // 2. Lấy danh sách app đã cài đặt
+        List<Application> apps = await DeviceApps.getInstalledApplications(
+          includeSystemApps: true,
+          includeAppIcons: false,
+        );
+
+        // 3. Lọc app có khả năng dùng mạng
+        List<AppUsage> networkApps = [];
+        
+        for (var app in apps) {
+          if (_isLikelyNetworkApp(app.packageName!)) {
+            networkApps.add(AppUsage(
+              appName: app.appName,
+              packageName: app.packageName!,
+              isActive: true,
+            ));
+          }
+        }
+
+        setState(() {
+          _activeApps = networkApps;
+        });
+
+        print('📱 Phát hiện ${_activeApps.length} app có thể dùng mạng');
+
+      } else {
+        setState(() {
+          _activeApps.clear();
+        });
+      }
+
+    } catch (e) {
+      print('❌ Lỗi kiểm tra: $e');
+    }
+  }
+
+  bool _isLikelyNetworkApp(String packageName) {
+    // Danh sách package name của app hay dùng mạng
+    final networkAppPatterns = [
+      'facebook', 'messenger', 'instagram', 'whatsapp',
+      'twitter', 'youtube', 'tiktok', 'zalo', 'chrome',
+      'safari', 'gmail', 'outlook', 'spotify', 'netflix',
+      'shoppe', 'lazada', 'viber', 'telegram', 'skype',
+      'browser', 'mail', 'music', 'video', 'chat'
+    ];
+
+    String lowerPackage = packageName.toLowerCase();
+    return networkAppPatterns.any((pattern) => lowerPackage.contains(pattern));
   }
 
   void _stopMonitoring() {
     setState(() {
       _isMonitoring = false;
+      _activeApps.clear();
     });
-
-    _monitoringTimer?.cancel();
-
-    _addNetworkEvent(NetworkEvent(
-      timestamp: DateTime.now(),
-      type: EventType.monitoringStopped,
-      details: '🛑 DỪNG GIÁM SÁT - Đã kiểm tra $_checkCount lần',
-    ));
-  }
-
-  Future<void> _performNetworkCheck() async {
-    try {
-      _checkCount++;
-      
-      var connectivityResult = await _connectivity.checkConnectivity();
-      NetworkActivityResult result = await _detectNetworkActivity(connectivityResult);
-
-      setState(() {
-        _activeAppsCount = result.activeAppsCount;
-      });
-
-      final event = NetworkEvent(
-        timestamp: DateTime.now(),
-        type: EventType.networkActivity,
-        details: result.details,
-      );
-
-      _addNetworkEvent(event);
-
-      print('[${Platform.operatingSystem}] Kiểm tra #$_checkCount: ${result.activeAppsCount} app');
-
-    } catch (e) {
-      _addNetworkEvent(NetworkEvent(
-        timestamp: DateTime.now(),
-        type: EventType.networkActivity,
-        details: '❌ Lỗi: $e',
-      ));
-    }
-  }
-
-  Future<NetworkActivityResult> _detectNetworkActivity(ConnectivityResult result) async {
-    if (result == ConnectivityResult.none) {
-      return NetworkActivityResult(
-        details: '❌ MẤT KẾT NỐI - Tất cả ứng dụng offline',
-        activeAppsCount: 0,
-      );
-    }
-
-    var random = Random();
-    
-    Map<String, List<String>> appActivities = {
-      'Facebook': ['📱 Facebook - Đang tải News Feed', '📱 Facebook - Đang chat'],
-      'Zalo': ['💬 Zalo - Đang nhắn tin', '💬 Zalo - Đang gọi video'],
-      'YouTube': ['🎬 YouTube - Đang phát video', '🎬 YouTube - Đang tải video'],
-      'TikTok': ['📸 TikTok - Đang xem video', '📸 TikTok - Đang quay video'],
-      'Web': ['🌐 Browser - Đang tải trang web', '🌐 Browser - Đang download'],
-      'Email': ['📧 Gmail - Đang đồng bộ email', '📧 Outlook - Đang gửi email'],
-    };
-
-    int activityCount = 1 + random.nextInt(4);
-    List<String> detectedActivities = [];
-    Set<String> activeApps = Set();
-    
-    List<String> appKeys = appActivities.keys.toList();
-    for (int i = 0; i < activityCount; i++) {
-      if (random.nextDouble() > 0.3) {
-        String randomApp = appKeys[random.nextInt(appKeys.length)];
-        List<String> activities = appActivities[randomApp]!;
-        String activity = activities[random.nextInt(activities.length)];
-        detectedActivities.add(activity);
-        activeApps.add(randomApp);
-      }
-    }
-
-    String baseStatus = _getConnectionStatus(result);
-    String platformInfo = isIOS ? '📱 iOS' : '💻 ${Platform.operatingSystem}';
-    int dataUsage = 10 + random.nextInt(200);
-
-    if (detectedActivities.isNotEmpty) {
-      return NetworkActivityResult(
-        details: '$baseStatus\n$platformInfo\n\n✅ PHÁT HIỆN ${activeApps.length} ỨNG DỤNG:\n${detectedActivities.join('\n')}\n\n📊 Data: ${dataUsage}KB\n🔢 Lần: $_checkCount',
-        activeAppsCount: activeApps.length,
-      );
-    } else {
-      return NetworkActivityResult(
-        details: '$baseStatus\n$platformInfo\n\n📶 Kết nối ổn định\n📊 Data: ${dataUsage}KB\n🔢 Lần: $_checkCount',
-        activeAppsCount: 0,
-      );
-    }
-  }
-
-  String _getConnectionStatus(ConnectivityResult result) {
-    switch (result) {
-      case ConnectivityResult.wifi: return '📶 WIFI';
-      case ConnectivityResult.mobile: return '📱 MOBILE';
-      case ConnectivityResult.ethernet: return '🔌 ETHERNET';
-      case ConnectivityResult.vpn: return '🛡️ VPN';
-      case ConnectivityResult.none: return '❌ OFFLINE';
-      default: return '🌐 KẾT NỐI';
-    }
-  }
-
-  void _addNetworkEvent(NetworkEvent event) {
-    setState(() {
-      _networkEvents.insert(0, event);
-      if (_networkEvents.length > 100) {
-        _networkEvents = _networkEvents.sublist(0, 100);
-      }
-    });
-  }
-
-  void _clearEvents() {
-    setState(() {
-      _networkEvents.clear();
-      _activeAppsCount = 0;
-    });
-  }
-
-  void _showPermissionError() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Cần Quyền'),
-        content: Text('Ứng dụng cần quyền để hoạt động đầy đủ'),
-        actions: [
-          TextButton(
-            onPressed: () => openAppSettings(),
-            child: Text('Mở Cài Đặt'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Đóng'),
-          ),
-        ],
-      ),
-    );
+    _monitorTimer?.cancel();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(isIOS ? 'Giám Sát Mạng 5 Giây' : 'Network Monitor'),
+        title: Text('Real Network Monitor'),
         backgroundColor: Colors.blue,
       ),
       body: Column(
         children: [
-          _buildStatusPanel(),
-          _buildControlPanel(),
-          _buildEventsList(),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildStatusPanel() {
-    return Card(
-      margin: EdgeInsets.all(16),
-      child: Padding(
-        padding: EdgeInsets.all(16),
-        child: Column(
-          children: [
-            Row(
-              children: [
-                Icon(
-                  _isMonitoring ? Icons.timer : Icons.timer_off,
-                  color: _isMonitoring ? Colors.green : Colors.grey,
-                  size: 40,
-                ),
-                SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+          // Status Panel
+          Card(
+            margin: EdgeInsets.all(16),
+            child: Padding(
+              padding: EdgeInsets.all(16),
+              child: Column(
+                children: [
+                  Row(
                     children: [
-                      Text(
-                        _isMonitoring ? '🔄 ĐANG GIÁM SÁT' : '⏸️ CHƯA BẮT ĐẦU',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: _isMonitoring ? Colors.green : Colors.grey,
+                      Icon(
+                        _isMonitoring ? Icons.security : Icons.lock_open,
+                        color: _isMonitoring ? Colors.green : Colors.grey,
+                        size: 40,
+                      ),
+                      SizedBox(width: 16),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              _isMonitoring ? '🔄 ĐANG GIÁM SÁT' : '⏸️ CHƯA GIÁM SÁT',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                                color: _isMonitoring ? Colors.green : Colors.grey,
+                              ),
+                            ),
+                            SizedBox(height: 4),
+                            Text(
+                              _networkStatus,
+                              style: TextStyle(fontSize: 14, color: Colors.blue),
+                            ),
+                            Text(
+                              'App có thể dùng mạng: ${_activeApps.length}',
+                              style: TextStyle(fontSize: 14),
+                            ),
+                          ],
                         ),
-                      ),
-                      SizedBox(height: 4),
-                      Text(
-                        'Đã kiểm tra: $_checkCount lần',
-                        style: TextStyle(color: Colors.blue, fontSize: 16),
-                      ),
-                      Text(
-                        'App đang online: $_activeAppsCount',
-                        style: TextStyle(
-                          color: _activeAppsCount > 0 ? Colors.green : Colors.grey,
-                        ),
-                      ),
-                      Text(
-                        isIOS ? '📱 iOS - 5 giây/lần' : '💻 ${Platform.operatingSystem} - 5 giây/lần',
-                        style: TextStyle(color: Colors.grey, fontSize: 12),
                       ),
                     ],
+                  ),
+                  SizedBox(height: 10),
+                  if (_isMonitoring) ...[
+                    LinearProgressIndicator(
+                      backgroundColor: Colors.grey[200],
+                      valueColor: AlwaysStoppedAnimation<Color>(Colors.green),
+                    ),
+                    SizedBox(height: 8),
+                    Text(
+                      '⏰ Đang giám sát 5 giây/lần',
+                      style: TextStyle(fontSize: 12, color: Colors.green),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+
+          // Control Buttons
+          Padding(
+            padding: EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: _isMonitoring ? null : _startRealMonitoring,
+                    icon: Icon(Icons.play_arrow),
+                    label: Text('BẮT ĐẦU GIÁM SÁT'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.green,
+                      foregroundColor: Colors.white,
+                      padding: EdgeInsets.symmetric(vertical: 15),
+                    ),
+                  ),
+                ),
+                SizedBox(width: 10),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: _isMonitoring ? _stopMonitoring : null,
+                    icon: Icon(Icons.stop),
+                    label: Text('DỪNG LẠI'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.red,
+                      foregroundColor: Colors.white,
+                      padding: EdgeInsets.symmetric(vertical: 15),
+                    ),
                   ),
                 ),
               ],
             ),
-          ],
-        ),
-      ),
-    );
-  }
+          ),
 
-  Widget _buildControlPanel() {
-    return Padding(
-      padding: EdgeInsets.symmetric(horizontal: 16),
-      child: Row(
-        children: [
-          Expanded(
-            child: ElevatedButton.icon(
-              onPressed: _isMonitoring ? null : _startMonitoring,
-              icon: Icon(Icons.play_arrow),
-              label: Text(isIOS ? 'BẮT ĐẦU 5 GIÂY' : 'START MONITORING'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.green,
-                foregroundColor: Colors.white,
-                padding: EdgeInsets.symmetric(vertical: 15),
-              ),
-            ),
-          ),
-          SizedBox(width: 10),
-          Expanded(
-            child: ElevatedButton.icon(
-              onPressed: _isMonitoring ? _stopMonitoring : null,
-              icon: Icon(Icons.stop),
-              label: Text(isIOS ? 'DỪNG LẠI' : 'STOP'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red,
-                foregroundColor: Colors.white,
-                padding: EdgeInsets.symmetric(vertical: 15),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+          SizedBox(height: 20),
 
-  Widget _buildEventsList() {
-    return Expanded(
-      child: Column(
-        children: [
-          Padding(
-            padding: EdgeInsets.all(16),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  isIOS ? '📊 Hoạt động mạng:' : '📊 Network Activity',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                ),
-                TextButton(
-                  onPressed: _clearEvents,
-                  child: Text(isIOS ? 'XÓA LỊCH SỬ' : 'CLEAR'),
-                ),
-              ],
-            ),
-          ),
+          // Active Apps List
           Expanded(
-            child: _networkEvents.isEmpty
+            child: _activeApps.isEmpty
                 ? Center(
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Icon(Icons.network_check, size: 64, color: Colors.grey),
+                        Icon(Icons.phonelink_erase, size: 64, color: Colors.grey),
                         SizedBox(height: 16),
                         Text(
-                          isIOS ? 'Chưa có hoạt động nào' : 'No activity yet',
+                          'Chưa phát hiện app nào',
                           style: TextStyle(color: Colors.grey),
+                        ),
+                        SizedBox(height: 8),
+                        Text(
+                          'App mạng sẽ hiển thị khi bắt đầu giám sát',
+                          style: TextStyle(color: Colors.grey, fontSize: 12),
+                          textAlign: TextAlign.center,
                         ),
                       ],
                     ),
                   )
                 : ListView.builder(
-                    itemCount: _networkEvents.length,
+                    itemCount: _activeApps.length,
                     itemBuilder: (context, index) {
-                      final event = _networkEvents[index];
+                      final app = _activeApps[index];
                       return Card(
                         margin: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                         child: ListTile(
-                          leading: Icon(Icons.network_check, color: Colors.blue),
-                          title: Text(event.details, style: TextStyle(fontSize: 12)),
-                          subtitle: Text(
-                            '${event.timestamp.hour}:${event.timestamp.minute.toString().padLeft(2, '0')}:${event.timestamp.second.toString().padLeft(2, '0')}',
-                            style: TextStyle(fontSize: 10, color: Colors.grey),
+                          leading: Icon(Icons.apps, color: Colors.blue),
+                          title: Text(
+                            app.appName,
+                            style: TextStyle(fontWeight: FontWeight.bold),
                           ),
+                          subtitle: Text(
+                            _getAppCategory(app.packageName),
+                            style: TextStyle(fontSize: 12),
+                          ),
+                          trailing: Icon(Icons.wifi, color: Colors.green),
                         ),
                       );
                     },
@@ -415,21 +284,42 @@ class _NetworkActivityScreenState extends State<NetworkActivityScreen>
       ),
     );
   }
+
+  String _getAppCategory(String packageName) {
+    if (packageName.contains('facebook') || packageName.contains('instagram')) {
+      return 'Mạng xã hội';
+    } else if (packageName.contains('messenger') || packageName.contains('zalo')) {
+      return 'Nhắn tin';
+    } else if (packageName.contains('youtube') || packageName.contains('tiktok')) {
+      return 'Video';
+    } else if (packageName.contains('chrome') || packageName.contains('safari')) {
+      return 'Trình duyệt';
+    } else if (packageName.contains('gmail') || packageName.contains('mail')) {
+      return 'Email';
+    } else if (packageName.contains('spotify') || packageName.contains('music')) {
+      return 'Nhạc';
+    } else if (packageName.contains('shoppe') || packageName.contains('lazada')) {
+      return 'Mua sắm';
+    } else {
+      return 'Ứng dụng mạng';
+    }
+  }
+
+  @override
+  void dispose() {
+    _monitorTimer?.cancel();
+    super.dispose();
+  }
 }
 
-enum EventType { monitoringStarted, monitoringStopped, networkActivity }
+class AppUsage {
+  final String appName;
+  final String packageName;
+  final bool isActive;
 
-class NetworkEvent {
-  final DateTime timestamp;
-  final EventType type;
-  final String details;
-
-  NetworkEvent({required this.timestamp, required this.type, required this.details});
-}
-
-class NetworkActivityResult {
-  final String details;
-  final int activeAppsCount;
-
-  NetworkActivityResult({required this.details, required this.activeAppsCount});
+  AppUsage({
+    required this.appName,
+    required this.packageName,
+    required this.isActive,
+  });
 }
