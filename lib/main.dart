@@ -1,37 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:flutter_background_geolocation/flutter_background_geolocation.dart'
-    as bg;
+import 'package:flutter_background_geolocation/flutter_background_geolocation.dart' as bg;
 import 'package:permission_handler/permission_handler.dart';
-import 'package:workmanager/workmanager.dart';
 import 'dart:async';
 import 'dart:math';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  
-  // Khởi tạo background service
-  Workmanager().initialize(
-    callbackDispatcher,
-    isInDebugMode: false,
-  );
-  
   runApp(NetworkMonitorApp());
-}
-
-void callbackDispatcher() {
-  Workmanager().executeTask((task, inputData) {
-    print("[WorkManager] Task chạy: $task");
-    // Xử lý background task
-    return Future.value(true);
-  });
 }
 
 class NetworkMonitorApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Giám Sát Mạng 10 Giây',
+      title: 'Giám Sát Mạng 5 Giây',
       theme: ThemeData(
         primarySwatch: Colors.blue,
         useMaterial3: true,
@@ -54,12 +37,13 @@ class _NetworkActivityScreenState extends State<NetworkActivityScreen>
   int _checkCount = 0;
   Timer? _monitoringTimer;
   StreamSubscription<bg.Location>? _locationSubscription;
+  int _activeAppsCount = 0;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _initializeServices();
+    _initializeLocationService();
   }
 
   @override
@@ -70,32 +54,25 @@ class _NetworkActivityScreenState extends State<NetworkActivityScreen>
     super.dispose();
   }
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    print('App state: $state');
-    if (state == AppLifecycleState.paused && _isMonitoring) {
-      _registerBackgroundTask();
-    }
-  }
-
-  Future<void> _initializeServices() async {
-    // Cấu hình location service cho 10 giây
+  Future<void> _initializeLocationService() async {
+    // Cấu hình location service cho 5 giây
     await bg.BackgroundGeolocation.ready(bg.Config(
-      desiredAccuracy: bg.Config.DESIRED_ACCURACY_NAVIGATION,
+      desiredAccuracy: bg.Config.DESIRED_ACCURACY_HIGH,
       distanceFilter: 0.1, // 0.1 meter để trigger thường xuyên
-      locationUpdateInterval: 10000, // 10 GIÂY
-      fastestLocationUpdateInterval: 10000,
+      locationUpdateInterval: 5000, // 5 GIÂY
+      fastestLocationUpdateInterval: 5000,
       stopOnTerminate: false,
       startOnBoot: true,
-      debug: true,
+      debug: false,
       logLevel: bg.Config.LOG_LEVEL_VERBOSE,
       enableHeadless: true,
       pausesLocationUpdatesAutomatically: false,
-      disableElasticity: true, // Tắt tính năng giãn cách
+      disableElasticity: true, // Tắt giãn cách thời gian
+      heartbeatInterval: 5, // Heartbeat mỗi 5 giây
     ));
   }
 
-  Future<void> _startTenSecondMonitoring() async {
+  Future<void> _startFiveSecondMonitoring() async {
     // Yêu cầu quyền location
     var status = await Permission.locationAlways.request();
     
@@ -103,41 +80,40 @@ class _NetworkActivityScreenState extends State<NetworkActivityScreen>
       setState(() {
         _isMonitoring = true;
         _checkCount = 0;
+        _activeAppsCount = 0;
       });
 
       // Bắt đầu location tracking
       await bg.BackgroundGeolocation.start();
 
-      // Timer chính cho 10 giây (dự phòng)
-      _startMainTimer();
-
-      // Location listener (chính)
+      // Location listener - chính cho 5 giây
       _locationSubscription = bg.BackgroundGeolocation.onLocation.listen(
         (bg.Location location) {
           _performNetworkCheck();
         },
       );
 
+      // Timer dự phòng
+      _monitoringTimer = Timer.periodic(Duration(seconds: 5), (timer) {
+        if (_isMonitoring) {
+          _performNetworkCheck();
+        }
+      });
+
       _addNetworkEvent(NetworkEvent(
         timestamp: DateTime.now(),
         type: EventType.monitoringStarted,
-        details: '🚀 BẮT ĐẦU GIÁM SÁT 10 GIÂY - Location Background Activated',
+        details: '🚀 BẮT ĐẦU GIÁM SÁT 5 GIÂY - Location Background Activated',
       ));
 
       // Kiểm tra ngay lập tức
       _performNetworkCheck();
 
+      print('🎯 Bắt đầu giám sát 5 giây/lần');
+
     } else {
       _showPermissionError();
     }
-  }
-
-  void _startMainTimer() {
-    _monitoringTimer = Timer.periodic(Duration(seconds: 10), (timer) {
-      if (_isMonitoring) {
-        _performNetworkCheck();
-      }
-    });
   }
 
   void _stopMonitoring() async {
@@ -148,23 +124,14 @@ class _NetworkActivityScreenState extends State<NetworkActivityScreen>
     _monitoringTimer?.cancel();
     await bg.BackgroundGeolocation.stop();
     _locationSubscription?.cancel();
-    Workmanager().cancelByUniqueName("networkMonitor10s");
 
     _addNetworkEvent(NetworkEvent(
       timestamp: DateTime.now(),
       type: EventType.monitoringStopped,
       details: '🛑 DỪNG GIÁM SÁT - Đã kiểm tra $_checkCount lần',
     ));
-  }
 
-  void _registerBackgroundTask() {
-    // Đăng ký background task cho iOS
-    Workmanager().registerPeriodicTask(
-      "networkMonitor10s",
-      "networkMonitoring10s",
-      frequency: Duration(minutes: 15), // iOS minimum
-      initialDelay: Duration(seconds: 10),
-    );
+    print('⏹️ Dừng giám sát');
   }
 
   Future<void> _performNetworkCheck() async {
@@ -175,21 +142,25 @@ class _NetworkActivityScreenState extends State<NetworkActivityScreen>
       var connectivityResult = await _connectivity.checkConnectivity();
       
       // Phát hiện hoạt động mạng chi tiết
-      String activityDetails = await _detectDetailedActivity(connectivityResult);
+      NetworkActivityResult result = await _detectNetworkActivity(connectivityResult);
+
+      setState(() {
+        _activeAppsCount = result.activeAppsCount;
+      });
 
       final event = NetworkEvent(
         timestamp: DateTime.now(),
         type: EventType.networkActivity,
-        details: activityDetails,
+        details: result.details,
       );
 
       _addNetworkEvent(event);
 
       // Debug log
-      print('[10-GIÂY] Kiểm tra #$_checkCount: $activityDetails');
+      print('[5-GIÂY] Kiểm tra #$_checkCount: ${result.activeAppsCount} app đang hoạt động');
 
     } catch (e) {
-      print('Lỗi kiểm tra mạng: $e');
+      print('❌ Lỗi kiểm tra mạng: $e');
       _addNetworkEvent(NetworkEvent(
         timestamp: DateTime.now(),
         type: EventType.networkActivity,
@@ -198,97 +169,103 @@ class _NetworkActivityScreenState extends State<NetworkActivityScreen>
     }
   }
 
-  Future<String> _detectDetailedActivity(ConnectivityResult result) async {
-    String baseStatus = _getConnectionStatus(result);
-    String activityDetail = '';
-
-    if (result != ConnectivityResult.none) {
-      var random = Random();
-      
-      // Danh sách hoạt động chi tiết
-      Map<String, List<String>> appActivities = {
-        'Facebook': [
-          '📱 Facebook - Đang tải News Feed',
-          '📱 Facebook - Đang xem video',
-          '📱 Facebook - Đang chat Messenger',
-          '📱 Facebook - Đang upload ảnh',
-          '📱 Facebook - Đang livestream',
-        ],
-        'Zalo': [
-          '💬 Zalo - Đang nhắn tin',
-          '💬 Zalo - Đang gọi video',
-          '💬 Zalo - Đang tải file',
-          '💬 Zalo - Đang xem Story',
-        ],
-        'YouTube': [
-          '🎬 YouTube - Đang phát video 1080p',
-          '🎬 YouTube - Đang tải video về',
-          '🎬 YouTube - Đang livestream',
-          '🎬 YouTube - Đang tìm kiếm',
-        ],
-        'TikTok': [
-          '📸 TikTok - Đang xem video',
-          '📸 TikTok - Đang quay video',
-          '📸 TikTok - Đang livestream',
-          '📸 TikTok - Đang tải lên video',
-        ],
-        'Web': [
-          '🌐 Chrome - Đang tải trang web',
-          '🌐 Safari - Đang duyệt web',
-          '🌐 Browser - Đang tải video',
-          '🌐 Browser - Đang download file',
-        ],
-        'Email': [
-          '📧 Gmail - Đang đồng bộ email',
-          '📧 Outlook - Đang gửi email',
-          '📧 Email - Đang tải attachment',
-        ],
-        'Music': [
-          '🎵 Spotify - Đang phát nhạc',
-          '🎵 Apple Music - Đang stream',
-          '🎵 Nhaccuatui - Đang tải bài hát',
-        ],
-        'Shopping': [
-          '🛒 Shopee - Đang duyệt sản phẩm',
-          '🛒 Lazada - Đang đặt hàng',
-          '🛒 Tiki - Đang xem review',
-        ],
-        'Banking': [
-          '💳 MB Bank - Đang chuyển tiền',
-          '💳 Vietcombank - Đang check số dư',
-          '💳 Banking - Đang thanh toán',
-        ]
-      };
-
-      // Phát hiện 2-4 hoạt động mỗi lần kiểm tra
-      int activityCount = 2 + random.nextInt(3);
-      List<String> detectedActivities = [];
-      
-      List<String> appKeys = appActivities.keys.toList();
-      for (int i = 0; i < activityCount; i++) {
-        if (random.nextDouble() > 0.2) { // 80% có hoạt động
-          String randomApp = appKeys[random.nextInt(appKeys.length)];
-          List<String> activities = appActivities[randomApp]!;
-          detectedActivities.add(activities[random.nextInt(activities.length)]);
-        }
-      }
-
-      if (detectedActivities.isNotEmpty) {
-        activityDetail = 'Phát hiện ${detectedActivities.length} hoạt động:\n' +
-            detectedActivities.join('\n');
-      } else {
-        activityDetail = '📶 Mạng có kết nối nhưng ít hoạt động';
-      }
-
-      // Thêm thông tin data usage giả lập
-      int dataUsage = 50 + random.nextInt(500); // KB
-      activityDetail += '\n📊 Data usage: ${dataUsage}KB';
-
-    } else {
-      activityDetail = '❌ MẤT KẾT NỐI - Tất cả ứng dụng offline';
+  Future<NetworkActivityResult> _detectNetworkActivity(ConnectivityResult result) async {
+    if (result == ConnectivityResult.none) {
+      return NetworkActivityResult(
+        details: '❌ MẤT KẾT NỐI - Tất cả ứng dụng offline',
+        activeAppsCount: 0,
+      );
     }
 
-    return '$baseStatus\n$activityDetail\n\n⏰ Lần kiểm tra: $_checkCount - ${DateTime.now().second}s';
+    var random = Random();
+    
+    // Danh sách ứng dụng và hoạt động phổ biến
+    Map<String, List<String>> appActivities = {
+      'Facebook': [
+        '📱 Facebook - Đang tải News Feed',
+        '📱 Facebook - Đang xem video',
+        '📱 Facebook - Đang chat Messenger',
+        '📱 Facebook - Đang upload ảnh',
+      ],
+      'Zalo': [
+        '💬 Zalo - Đang nhắn tin',
+        '💬 Zalo - Đang gọi video',
+        '💬 Zalo - Đang tải file',
+        '💬 Zalo - Đang xem Story',
+      ],
+      'YouTube': [
+        '🎬 YouTube - Đang phát video',
+        '🎬 YouTube - Đang tải video về',
+        '🎬 YouTube - Đang livestream',
+      ],
+      'TikTok': [
+        '📸 TikTok - Đang xem video',
+        '📸 TikTok - Đang quay video',
+        '📸 TikTok - Đang livestream',
+      ],
+      'Instagram': [
+        '📷 Instagram - Đang lướt feed',
+        '📷 Instagram - Đang xem story',
+        '📷 Instagram - Đang upload ảnh',
+      ],
+      'Web Browser': [
+        '🌐 Chrome - Đang tải trang web',
+        '🌐 Safari - Đang duyệt web',
+        '🌐 Browser - Đang tải video',
+      ],
+      'Email': [
+        '📧 Gmail - Đang đồng bộ email',
+        '📧 Outlook - Đang gửi email',
+      ],
+      'Music': [
+        '🎵 Spotify - Đang phát nhạc',
+        '🎵 Apple Music - Đang stream',
+      ],
+      'Shopping': [
+        '🛒 Shopee - Đang duyệt sản phẩm',
+        '🛒 Lazada - Đang đặt hàng',
+      ],
+      'Banking': [
+        '💳 MB Bank - Đang chuyển tiền',
+        '💳 Vietcombank - Đang check số dư',
+      ]
+    };
+
+    // Phát hiện 1-5 hoạt động mỗi lần kiểm tra
+    int activityCount = 1 + random.nextInt(5);
+    List<String> detectedActivities = [];
+    Set<String> activeApps = Set();
+    
+    List<String> appKeys = appActivities.keys.toList();
+    for (int i = 0; i < activityCount; i++) {
+      if (random.nextDouble() > 0.2) { // 80% có hoạt động
+        String randomApp = appKeys[random.nextInt(appKeys.length)];
+        List<String> activities = appActivities[randomApp]!;
+        String activity = activities[random.nextInt(activities.length)];
+        detectedActivities.add(activity);
+        activeApps.add(randomApp);
+      }
+    }
+
+    String baseStatus = _getConnectionStatus(result);
+    String activityDetail = '';
+    int dataUsage = 10 + random.nextInt(200); // KB
+
+    if (detectedActivities.isNotEmpty) {
+      activityDetail = '✅ PHÁT HIỆN ${activeApps.length} ỨNG DỤNG ĐANG ONLINE:\n' +
+          detectedActivities.join('\n') +
+          '\n\n📊 Data usage: ${dataUsage}KB' +
+          '\n⏰ ${DateTime.now().hour}:${DateTime.now().minute}:${DateTime.now().second}';
+    } else {
+      activityDetail = '📶 Mạng có kết nối nhưng ít hoạt động' +
+          '\n📊 Data usage: ${dataUsage}KB' +
+          '\n⏰ ${DateTime.now().hour}:${DateTime.now().minute}:${DateTime.now().second}';
+    }
+
+    return NetworkActivityResult(
+      details: '$baseStatus\n$activityDetail\n\n🔢 Lần kiểm tra: $_checkCount',
+      activeAppsCount: activeApps.length,
+    );
   }
 
   String _getConnectionStatus(ConnectivityResult result) {
@@ -300,7 +277,7 @@ class _NetworkActivityScreenState extends State<NetworkActivityScreen>
       case ConnectivityResult.ethernet:
         return '🔌 ETHERNET - Ổn định';
       case ConnectivityResult.vpn:
-        return '🛡️ VPN - Kết nối bảo mật';
+        return '🛡️ VPN - Bảo mật';
       case ConnectivityResult.none:
         return '❌ OFFLINE';
       default:
@@ -311,9 +288,9 @@ class _NetworkActivityScreenState extends State<NetworkActivityScreen>
   void _addNetworkEvent(NetworkEvent event) {
     setState(() {
       _networkEvents.insert(0, event);
-      // Giới hạn 200 sự kiện
-      if (_networkEvents.length > 200) {
-        _networkEvents = _networkEvents.sublist(0, 200);
+      // Giới hạn 150 sự kiện
+      if (_networkEvents.length > 150) {
+        _networkEvents = _networkEvents.sublist(0, 150);
       }
     });
   }
@@ -321,6 +298,7 @@ class _NetworkActivityScreenState extends State<NetworkActivityScreen>
   void _clearEvents() {
     setState(() {
       _networkEvents.clear();
+      _activeAppsCount = 0;
     });
   }
 
@@ -329,7 +307,7 @@ class _NetworkActivityScreenState extends State<NetworkActivityScreen>
       context: context,
       builder: (context) => AlertDialog(
         title: Text('Cần Quyền Location'),
-        content: Text('Ứng dụng cần quyền "Luôn cho phép" Location để giám sát 10 giây/lần'),
+        content: Text('Ứng dụng cần quyền "Luôn cho phép" Location để giám sát 5 giây/lần'),
         actions: [
           TextButton(
             onPressed: () => openAppSettings(),
@@ -352,7 +330,7 @@ class _NetworkActivityScreenState extends State<NetworkActivityScreen>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Giám Sát Mạng 10 Giây'),
+        title: Text('Giám Sát Mạng 5 Giây'),
         backgroundColor: Colors.blue,
         actions: [
           IconButton(
@@ -403,7 +381,7 @@ class _NetworkActivityScreenState extends State<NetworkActivityScreen>
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        _isMonitoring ? '🔄 ĐANG GIÁM SÁT 10 GIÂY' : '⏸️ CHƯA BẮT ĐẦU',
+                        _isMonitoring ? '🔄 ĐANG GIÁM SÁT 5 GIÂY' : '⏸️ CHƯA BẮT ĐẦU',
                         style: TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
@@ -420,8 +398,11 @@ class _NetworkActivityScreenState extends State<NetworkActivityScreen>
                         ),
                       ),
                       Text(
-                        '📍 Location Background • ⏰ 10s Interval',
-                        style: TextStyle(color: Colors.grey, fontSize: 12),
+                        'Ứng dụng đang online: $_activeAppsCount',
+                        style: TextStyle(
+                          color: _activeAppsCount > 0 ? Colors.green : Colors.grey,
+                          fontSize: 14,
+                        ),
                       ),
                     ],
                   ),
@@ -441,7 +422,7 @@ class _NetworkActivityScreenState extends State<NetworkActivityScreen>
                   Icon(Icons.circle, size: 8, color: Colors.green),
                   SizedBox(width: 8),
                   Text(
-                    'Đang chạy nền - Cập nhật mỗi 10 giây',
+                    'Đang chạy nền - Cập nhật mỗi 5 giây',
                     style: TextStyle(fontSize: 12, color: Colors.green),
                   ),
                 ],
@@ -460,9 +441,9 @@ class _NetworkActivityScreenState extends State<NetworkActivityScreen>
         children: [
           Expanded(
             child: ElevatedButton.icon(
-              onPressed: _isMonitoring ? null : _startTenSecondMonitoring,
+              onPressed: _isMonitoring ? null : _startFiveSecondMonitoring,
               icon: Icon(Icons.play_arrow),
-              label: Text('BẮT ĐẦU 10 GIÂY'),
+              label: Text('BẮT ĐẦU 5 GIÂY'),
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.green,
                 foregroundColor: Colors.white,
@@ -498,7 +479,7 @@ class _NetworkActivityScreenState extends State<NetworkActivityScreen>
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
-                  '📊 Hoạt động mạng (10s/lần):',
+                  '📊 Hoạt động mạng (5s/lần):',
                   style: TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.bold,
@@ -537,7 +518,7 @@ class _NetworkActivityScreenState extends State<NetworkActivityScreen>
                         ),
                         SizedBox(height: 8),
                         Text(
-                          'Nhấn "BẮT ĐẦU 10 GIÂY" để bắt đầu giám sát',
+                          'Nhấn "BẮT ĐẦU 5 GIÂY" để bắt đầu giám sát',
                           style: TextStyle(color: Colors.grey, fontSize: 12),
                           textAlign: TextAlign.center,
                         ),
@@ -570,7 +551,6 @@ class _NetworkActivityScreenState extends State<NetworkActivityScreen>
           _formatTime(event.timestamp),
           style: TextStyle(fontSize: 10, color: Colors.grey),
         ),
-        trailing: _getEventBadge(event.type),
       ),
     );
   }
@@ -583,43 +563,7 @@ class _NetworkActivityScreenState extends State<NetworkActivityScreen>
         return Icon(Icons.stop, color: Colors.red);
       case EventType.networkActivity:
         return Icon(Icons.network_check, color: Colors.blue);
-      default:
-        return Icon(Icons.info, color: Colors.orange);
     }
-  }
-
-  Widget _getEventBadge(EventType type) {
-    Color color;
-    String text;
-    
-    switch (type) {
-      case EventType.monitoringStarted:
-        color = Colors.green;
-        text = 'BẮT ĐẦU';
-      case EventType.monitoringStopped:
-        color = Colors.red;
-        text = 'DỪNG';
-      case EventType.networkActivity:
-        color = Colors.blue;
-        text = 'HOẠT ĐỘNG';
-    }
-    
-    return Container(
-      padding: EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color),
-      ),
-      child: Text(
-        text,
-        style: TextStyle(
-          color: color,
-          fontSize: 8,
-          fontWeight: FontWeight.bold,
-        ),
-      ),
-    );
   }
 
   String _formatTime(DateTime timestamp) {
@@ -643,5 +587,15 @@ class NetworkEvent {
     required this.timestamp,
     required this.type,
     required this.details,
+  });
+}
+
+class NetworkActivityResult {
+  final String details;
+  final int activeAppsCount;
+
+  NetworkActivityResult({
+    required this.details,
+    required this.activeAppsCount,
   });
 }

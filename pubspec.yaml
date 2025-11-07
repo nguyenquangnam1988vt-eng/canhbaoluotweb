@@ -1,7 +1,8 @@
-name: network_monitor_10s
-description: Giám sát mạng 10 giây một lần
-
+name: network_monitor
+description: "Network Activity Monitor 5 Seconds"
 publish_to: 'none'
+
+version: 1.0.0+1
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -10,8 +11,8 @@ dependencies:
   flutter:
     sdk: flutter
   connectivity_plus: ^5.0.2
-  flutter_background_geolocation: ^4.13.3
   permission_handler: ^11.0.1
+  flutter_background_geolocation: ^4.13.3
 
 dev_dependencies:
   flutter_test:
@@ -20,5 +21,3 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
-  assets:
-    - assets/
