@@ -31,15 +31,29 @@ class _NetworkMonitorScreenState extends State<NetworkMonitorScreen> {
   bool _isMonitoring = false;
   Timer? _monitorTimer;
   List<String> _networkEvents = [];
+  StreamSubscription<ConnectivityResult>? _connectivitySubscription;
 
   @override
   void initState() {
     super.initState();
     _checkNetwork();
+    _setupConnectivityListener();
+  }
+
+  void _setupConnectivityListener() {
+    _connectivitySubscription = _connectivity.onConnectivityChanged.listen((result) {
+      if (mounted) {
+        setState(() {
+          _networkStatus = _getNetworkStatus(result);
+        });
+        _addEvent('Thay đổi: $_networkStatus');
+      }
+    });
   }
 
   @override
   void dispose() {
+    _connectivitySubscription?.cancel();
     _stopMonitoring();
     super.dispose();
   }
@@ -47,14 +61,18 @@ class _NetworkMonitorScreenState extends State<NetworkMonitorScreen> {
   Future<void> _checkNetwork() async {
     try {
       var result = await _connectivity.checkConnectivity();
-      setState(() {
-        _networkStatus = _getNetworkStatus(result);
-      });
-      _addEvent('Kiểm tra: $_networkStatus');
+      if (mounted) {
+        setState(() {
+          _networkStatus = _getNetworkStatus(result);
+        });
+        _addEvent('Kiểm tra: $_networkStatus');
+      }
     } catch (e) {
-      setState(() {
-        _networkStatus = 'Lỗi kiểm tra';
-      });
+      if (mounted) {
+        setState(() {
+          _networkStatus = 'Lỗi kiểm tra';
+        });
+      }
     }
   }
 
@@ -72,13 +90,17 @@ class _NetworkMonitorScreenState extends State<NetworkMonitorScreen> {
   }
 
   void _startMonitoring() {
+    if (!mounted) return;
+    
     setState(() {
       _isMonitoring = true;
-      _networkEvents.clear();
+      if (_networkEvents.length > 10) {
+        _networkEvents.clear();
+      }
     });
 
     _monitorTimer = Timer.periodic(Duration(seconds: 5), (timer) async {
-      if (_isMonitoring) {
+      if (_isMonitoring && mounted) {
         await _checkNetwork();
         _addEvent('Giám sát - ${DateTime.now().toString()}');
       }
@@ -96,6 +118,8 @@ class _NetworkMonitorScreenState extends State<NetworkMonitorScreen> {
   }
 
   void _addEvent(String event) {
+    if (!mounted) return;
+    
     setState(() {
       _networkEvents.insert(0, '${DateTime.now().hour}:${DateTime.now().minute}:${DateTime.now().second} - $event');
       if (_networkEvents.length > 20) {
